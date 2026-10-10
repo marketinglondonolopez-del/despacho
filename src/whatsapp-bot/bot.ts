@@ -4,7 +4,7 @@ import qrcode from 'qrcode-terminal';
 
 const botConfig = {
   keywords: ['servicio para', 'necesito un carro', 'carrera a', 'un servicio a', 'necesito transporte', 'servicio al', 'necesito servicio', 'un servicio', 'carrera', 'transporte', 'viaje'],
-  apiBaseUrl: 'http://localhost:3000/api'
+  apiBaseUrl: 'https://despacho-a52r.onrender.com/api'
 };
 
 // Memoria del Cerebro
