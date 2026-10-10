@@ -1,0 +1,318 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  DISPATCHER
+  DRIVER
+}
+
+enum DriverStatus {
+  AVAILABLE
+  BUSY
+  PAUSED
+  OFFLINE
+}
+
+enum ServiceStatus {
+  CREATED
+  SEARCHING_DRIVER
+  DRIVER_OFFERED
+  DRIVER_ACCEPTED
+  WAITING_CUSTOMER_CONFIRMATION
+  CONFIRMED
+  DRIVER_EN_ROUTE
+  DRIVER_ARRIVED
+  PASSENGER_PICKED_UP
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED_BY_CUSTOMER
+  CANCELLED_BY_DRIVER
+  NO_DRIVER_AVAILABLE
+  EXPIRED
+}
+
+enum VehicleCategory {
+  BASICO
+  CONFORT
+  CAMIONETA
+  VAN
+  OTRO
+}
+
+enum CancellationSource {
+  CUSTOMER
+  DRIVER
+  SYSTEM
+  ADMIN
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String
+  name         String
+  role         Role        @default(DISPATCHER)
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  driver       Driver?
+  auditLogs    AuditLog[]
+}
+
+model Driver {
+  id                    String            @id @default(uuid())
+  userId                String?           @unique
+  user                  User?             @relation(fields: [userId], references: [id])
+  name                  String
+  phone                 String            @unique
+  nationalId            String            @unique
+  photoUrl              String?
+  status                DriverStatus      @default(OFFLINE)
+  currentLatitude       Float?
+  currentLongitude      Float?
+  lastLocationUpdate    DateTime?
+  isLocationStale       Boolean           @default(false)
+  
+  // Métricas y Reputación
+  ratingAverage         Float             @default(5.0)
+  ratingCount           Int               @default(0)
+  ratingDistribution    Json              @default("{\"1\":0,\"2\":0,\"3\":0,\"4\":0,\"5\":0}")
+  completedServicesCount Int              @default(0)
+  cancelledServicesCount Int              @default(0)
+  acceptanceRate        Float             @default(1.0)
+  avgEtaMinutes         Float             @default(5.0)
+  
+  // Relaciones
+  vehicle               Vehicle?
+  servicesAssigned      Service[]         @relation("AssignedDriver")
+  serviceOffers         ServiceOffer[]
+  ratingsReceived       Rating[]          @relation("DriverRatings")
+  locationHistory       DriverLocation[]
+  qualityAlerts         QualityAlert[]
+  cancellations         Cancellation[]
+
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@index([status])
+  @@index([phone])
+  @@index([currentLatitude, currentLongitude])
+}
+
+model Vehicle {
+  id              String          @id @default(uuid())
+  driverId        String          @unique
+  driver          Driver          @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  brand           String
+  model           String
+  licensePlate    String          @unique
+  color           String
+  category        VehicleCategory @default(BASICO)
+  seats           Int             @default(4)
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model Passenger {
+  id              String            @id @default(uuid())
+  phone           String            @unique
+  name            String?
+  services        Service[]
+  ratingsGiven    Rating[]
+  conversation    WhatsAppSession?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([phone])
+}
+
+model WhatsAppSession {
+  id              String      @id @default(uuid())
+  passengerId     String      @unique
+  passenger       Passenger   @relation(fields: [passengerId], references: [id], onDelete: Cascade)
+  currentStep     String      @default("IDLE") // IDLE, ASKING_ORIGIN, ASKING_DESTINATION, ASKING_PASSENGERS, ASKING_OBS, CONFIRM_SERVICE, RATING_PENDING
+  draftServiceData Json?
+  lastInteraction DateTime    @default(now())
+}
+
+model Service {
+  id                  String            @id @default(uuid())
+  publicCode          String            @unique // Ej: SRV-20261007-000154
+  passengerId         String
+  passenger           Passenger         @relation(fields: [passengerId], references: [id])
+  driverId            String?
+  driver              Driver?           @relation("AssignedDriver", fields: [driverId], references: [id])
+  
+  status              ServiceStatus     @default(CREATED)
+  
+  // Ubicaciones
+  originAddress       String
+  originLatitude      Float
+  originLongitude     Float
+  destinationAddress  String
+  destinationLatitude Float
+  destinationLongitude Float
+  
+  passengersCount     Int               @default(1)
+  notes               String?
+  
+  // Estimaciones
+  estimatedDistanceKm Float?
+  estimatedDurationMin Int?
+  estimatedPrice      Float?
+  driverDelayReportedMin Int?
+  
+  // Tiempos clave
+  createdAt           DateTime          @default(now())
+  assignedAt          DateTime?
+  driverArrivedAt     DateTime?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+  
+  offers              ServiceOffer[]
+  events              ServiceEvent[]
+  rating              Rating?
+  cancellation        Cancellation?
+
+  @@index([status])
+  @@index([publicCode])
+  @@index([createdAt])
+  @@index([passengerId])
+  @@index([driverId])
+}
+
+model ServiceOffer {
+  id          String      @id @default(uuid())
+  serviceId   String
+  service     Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  driverId    String
+  driver      Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  roundNumber Int         @default(1)
+  score       Float
+  distanceKm  Float
+  etaMinutes  Int
+  status      String      @default("PENDING") // PENDING, ACCEPTED, REJECTED, EXPIRED, DELAY_OFFERED
+  offeredAt   DateTime    @default(now())
+  respondedAt DateTime?
+
+  @@unique([serviceId, driverId])
+  @@index([serviceId, roundNumber])
+}
+
+model ServiceEvent {
+  id          String        @id @default(uuid())
+  serviceId   String
+  service     Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  statusFrom  ServiceStatus?
+  statusTo    ServiceStatus
+  triggeredBy String        // "SYSTEM", "PASSENGER", "DRIVER", "ADMIN:uuid"
+  payload     Json?
+  timestamp   DateTime      @default(now())
+
+  @@index([serviceId, timestamp])
+}
+
+model Rating {
+  id          String      @id @default(uuid())
+  serviceId   String      @unique
+  service     Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  passengerId String
+  passenger   Passenger   @relation(fields: [passengerId], references: [id])
+  driverId    String
+  driver      Driver      @relation("DriverRatings", fields: [driverId], references: [id])
+  
+  stars       Int         // 1 a 5
+  feedbackTag String?     // "Excelente servicio", "Muy buen conductor", "Vehículo limpio", etc.
+  comment     String?
+  ipAddress   String?
+  userAgent   String?
+  
+  createdAt   DateTime    @default(now())
+
+  @@index([driverId, stars])
+  @@index([createdAt])
+}
+
+model QualityAlert {
+  id          String      @id @default(uuid())
+  driverId    String
+  driver      Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  serviceId   String
+  stars       Int
+  reason      String
+  isResolved  Boolean     @default(false)
+  resolvedBy  String?
+  resolvedAt  DateTime?
+  resolutionNotes String?
+  createdAt   DateTime    @default(now())
+
+  @@index([driverId, isResolved])
+}
+
+model Cancellation {
+  id          String             @id @default(uuid())
+  serviceId   String             @unique
+  service     Service            @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  driverId    String?
+  driver      Driver?            @relation(fields: [driverId], references: [id])
+  source      CancellationSource
+  reason      String
+  notes       String?
+  createdAt   DateTime           @default(now())
+}
+
+model DriverLocation {
+  id          String      @id @default(uuid())
+  driverId    String
+  driver      Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  latitude    Float
+  longitude   Float
+  accuracyMeters Float?
+  speedKmh    Float?
+  headingDeg  Float?
+  timestamp   DateTime    @default(now())
+
+  @@index([driverId, timestamp])
+}
+
+model Zone {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  polygonGeoJson Json
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model SystemSetting {
+  id          String      @id @default(uuid())
+  key         String      @unique
+  value       Json
+  description String?
+  updatedAt   DateTime    @updatedAt
+}
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id])
+  action      String
+  entity      String
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  timestamp   DateTime    @default(now())
+
+  @@index([timestamp])
+  @@index([action])
+}
